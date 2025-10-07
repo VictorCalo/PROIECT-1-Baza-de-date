@@ -1,0 +1,344 @@
+--12.
+/*
+   Descriere: Afișează numele companiilor care
+   au făcut cel puțin o plată pentru un birou situat la etajul 3
+
+   Acest cod rezolva cerinta a)
+*/
+SELECT
+  c.nume AS companie
+FROM companii c
+WHERE EXISTS (
+  SELECT 1
+  FROM plati p
+  JOIN inchirieri i
+      ON p.inchiriere_id = i.inchiriere_id
+  JOIN inchirieri_birouri ib
+      ON i.inchiriere_id = ib.inchiriere_id
+  JOIN birouri b
+      ON ib.birou_id = b.birou_id
+  WHERE p.companie_id = c.companie_id
+    AND b.etaj = 3
+);
+
+/* ============================================================
+   Descriere: Calculează pentru fiecare clădire prețul mediu
+              per loc și afișează lista de clădiri cu acest
+              preț, sortată descrescător.
+   Acest cod rezolva cerinta b)
+*/
+
+SELECT
+  c.Cladiri_ID,
+  c.Denumire,
+  stats.pret_med_per_loc
+FROM Cladiri c
+JOIN (
+  SELECT
+    b.Cladiri_ID,
+    AVG(t.Pret_Loc / nl.Numar_Locuri) AS pret_med_per_loc
+  FROM Birouri b
+  JOIN Tip_Birouri t
+    ON b.Tip_Birouri_ID = t.Tip_Birouri_ID
+  JOIN Numar_Locuri nl
+    ON b.Numar_Locuri_ID = nl.Numar_Locuri_ID
+  GROUP BY
+    b.Cladiri_ID
+) stats
+  ON c.Cladiri_ID = stats.Cladiri_ID
+ORDER BY
+  stats.pret_med_per_loc DESC;
+
+
+/* ============================================================
+
+   Descriere: Afișează companiile și totalul cheltuielilor lor,
+              dar numai pe acelea al căror total depășește
+              media totală a cheltuielilor tuturor companiilor.
+    Acest cod rezolva cerinta c)
+*/
+SELECT
+  c.companie_id,
+  c.nume,
+  SUM(p.suma_de_plata) AS total_incasari
+FROM companii c
+JOIN plati p
+  ON c.companie_id = p.companie_id
+GROUP BY c.companie_id, c.nume
+HAVING SUM(p.suma_de_plata) > (
+  SELECT AVG(sub.total)
+    FROM (
+      SELECT SUM(p2.suma_de_plata) AS total
+        FROM plati p2
+       GROUP BY p2.companie_id
+    ) sub
+)
+ORDER BY total_incasari DESC
+;
+
+
+
+/* ============================================================
+   Descriere: Afișează fiecare plată cu ID-ul, numele
+              companiei, suma (0 dacă e NULL), descrierea
+              metodei de plată prin DECODE și data plății,
+              ordonate descrescător după dată.
+   Acest cod rezolva cerinta d)
+*/
+SELECT
+  p.plati_id,
+  c.nume                               AS companie,
+  NVL(p.suma_de_plata, 0)              AS suma,
+  DECODE(
+    mp.metoda_plata,
+    'cash',            'Plata numerar',
+    'card',            'Plata cu card',
+    'transfer bancar', 'Plata prin transfer',
+    'Altă metodă'
+  )                                     AS metoda_prietenoasa,
+  p.data_plata
+FROM plati p
+JOIN companii c
+  ON p.companie_id = c.companie_id
+JOIN metoda_de_plata mp
+  ON p.metoda_plata_id = mp.metoda_plata_id
+ORDER BY p.data_plata DESC
+;
+
+
+
+/* ============================================================
+
+   Descriere: Pentru fiecare birou, află data ultimei
+              închirieri, numărul de zile scurse de atunci
+              și clasifică-l (‘Recent’, ‘Moderate’, ‘Vechi’),
+              afișând și un cod și un tip prescurtat.
+   Acest cod rezolva cerinta e) si f)
+*/
+WITH ultimele_inchirieri AS (
+  SELECT
+    b.birou_id,
+    MAX(i.data_final) AS data_ultima
+  FROM birouri b
+  JOIN inchirieri_birouri ib
+    ON b.birou_id = ib.birou_id
+  JOIN inchirieri i
+    ON ib.inchiriere_id = i.inchiriere_id
+  GROUP BY b.birou_id
+)
+SELECT
+  'Birou ' || TO_CHAR(b.birou_id)        AS cod_birou,
+  UPPER(SUBSTR(t.tip,1,3))               AS tip_scurt,
+  ui.data_ultima                         AS data_final,
+  TRUNC(SYSDATE - ui.data_ultima)        AS zile_trecute,
+  CASE                                    -- expresie CASE
+    WHEN SYSDATE - ui.data_ultima < 300   THEN 'Recent'
+    WHEN SYSDATE - ui.data_ultima <= 400 THEN 'Moderate'
+    ELSE 'Vechi'
+  END                                    AS categorie
+FROM birouri b
+JOIN ultimele_inchirieri ui
+  ON b.birou_id = ui.birou_id
+JOIN tip_birouri t
+  ON b.tip_birouri_id = t.tip_birouri_id
+ORDER BY zile_trecute DESC
+;
+
+
+
+--13.
+/* ----------------------------------------------------------------
+Operațiunea 1: Marcarea companiilor inactive - UPDATE cu subcerere corelată (EXISTS)
+Aflăm companiile care nu au niciună plată înregistrată și adăugăm sufixul " (Inactive)" la câmpul Nume.
+------------------------------------------------------------------ */
+UPDATE Companii c
+   SET c.Nume = c.Nume || ' (Inactive)'
+ WHERE NOT EXISTS (
+         SELECT 1
+           FROM Plati p
+          WHERE p.Companie_ID = c.Companie_ID
+       );
+COMMIT;
+
+-- 4. Verificăm companiile inactive
+SELECT Companie_ID, Nume
+FROM Companii
+WHERE Nume LIKE '%(Inactive)'
+ORDER BY Companie_ID;
+
+
+/* ----------------------------------------------------------------
+Operațiunea 2: Majorare preț loc pentru tipuri populare. UPDATE cu subcerere nesincronizată în FROM
+Pentru fiecare tip de birou care a fost închiriat de mai mult de 5 ori
+(adică acel tip apare în tabelul INCHIRIERI_BIROURI de mai mult de 5 ori), creștem prețul per loc cu 10%.
+ */
+------------------------------------------------------------------ */
+UPDATE tip_birouri t
+   SET t.pret_loc = t.pret_loc * 1.10
+ WHERE t.tip_birouri_id IN (
+         SELECT tip_birouri_id
+           FROM (
+             SELECT b.tip_birouri_id,
+                    COUNT(*) AS cnt
+               FROM birouri b
+               JOIN inchirieri_birouri ib
+                 ON b.birou_id = ib.birou_id
+              GROUP BY b.tip_birouri_id
+            ) sub
+          WHERE sub.cnt > 5
+       );
+COMMIT;
+SELECT
+  b.birou_id,
+  b.etaj,
+  b.numar       AS numar_birou,
+  t.tip         AS tip_birou,
+  t.pret_loc    AS tarif_per_loc
+FROM birouri b
+JOIN tip_birouri t
+  ON b.tip_birouri_id = t.tip_birouri_id
+ORDER BY b.birou_id;
+
+
+/* ----------------------------------------------------------------
+Operațiunea 3: Ștergerea închirierilor vechi. DELETE cu subcerere (IN)
+Ștergem toate rândurile din INCHIRIERI_BIROURI care au asociate
+închirieri finalizate înainte de 1 ianuarie 2024, apoi ștergem și înregistrările din INCHIRIERI.
+ */
+------------------------------------------------------------------ */
+-- 1) Ștergem asocierile birou–închiriere pentru închirieri finalizate înainte de 2024
+DELETE FROM Inchirieri_birouri ib
+ WHERE ib.Inchiriere_ID IN (
+         SELECT i.Inchiriere_ID
+           FROM Inchirieri i
+          WHERE i.Data_final < DATE '2024-01-01'
+       );
+
+-- 2) Arătăm starea după ștergerea asocierilor
+SELECT *
+FROM Inchirieri_birouri
+ORDER BY Inchiriere_ID, Birou_ID, Utilizator_ID;
+--3) Ștergem închirierile finalizate înainte de 2024
+DELETE FROM Inchirieri i
+ WHERE i.Data_final < DATE '2024-01-01';
+COMMIT;
+SELECT *
+FROM Inchirieri
+ORDER BY Inchiriere_ID;
+
+
+
+--14.
+
+-- 1) Crearea unei view complexe
+CREATE VIEW Vw_BirouriDetaliate AS
+SELECT
+  b.Birou_ID,
+  c.Denumire    AS NumeCladire,
+  t.Tip         AS TipBirou,
+  nl.Numar_Locuri,
+  -- coloană calculată
+  (t.Pret_Loc * nl.Numar_Locuri) AS CostTotalLocuri
+FROM Birouri b
+JOIN Cladiri c
+    ON b.Cladiri_ID      = c.Cladiri_ID
+JOIN Tip_Birouri t
+    ON b.Tip_Birouri_ID  = t.Tip_Birouri_ID
+JOIN Numar_Locuri nl
+    ON b.Numar_Locuri_ID = nl.Numar_Locuri_ID;
+
+
+-- OPERATIE LMD permisa pe acest view
+-- putem interoga (SELECT) liniştit
+SELECT *
+FROM Vw_BirouriDetaliate
+WHERE CostTotalLocuri < 200;
+
+-- OPERATIE LMD nepermisa
+-- încercare de INSERT, va eşua
+INSERT INTO Vw_BirouriDetaliate (Birou_ID, NumeCladire, TipBirou, Numar_Locuri, CostTotalLocuri)
+VALUES (11, 'Skyline Plaza', 'Open Desk', 1, 20);
+
+
+
+
+
+
+--15.
+
+
+-- ============================================================
+-- 1) OUTER JOIN pe minim 4 tabele
+-- Scop: afișează toate birourile, cu facilități (dacă există),
+--      tipul biroului (dacă e definit), numărul de locuri (dacă e definit)
+--      și numele clădirii (necesar, deci INNER JOIN pe cladiri).
+-- Notă: coloanele TIP_BIROURI_ID și NUMAR_LOCURI_ID din BIROURI trebuie să accepte NULL
+SELECT
+  bir.birou_id,
+  cld.denumire     AS nume_cladire,
+  bir.etaj,
+  bir.numar        AS numar_birou,
+  lfct.descriere_facilitate,
+  tbir.tip,                           
+  nrl.numar_locuri                     
+FROM birouri bir
+  LEFT OUTER JOIN facilitati_birouri fbir
+    ON fbir.birou_id = bir.birou_id   
+  LEFT OUTER JOIN lista_facilitati lfct
+    ON lfct.facilitate_id = fbir.facilitate_id
+  LEFT OUTER JOIN tip_birouri tbir
+    ON tbir.tip_birouri_id = bir.tip_birouri_id 
+  LEFT OUTER JOIN numar_locuri nrl
+    ON nrl.numar_locuri_id = bir.numar_locuri_id 
+  JOIN cladiri cld
+    ON cld.cladiri_id = bir.cladiri_id  
+ORDER BY bir.birou_id
+;
+
+
+-- ============================================================
+-- 2) DIVISION: tipuri de birouri care NU sunt folosite în nicio închiriere
+-- Scop: găsește toate tipurile pentru care nu există niciun birou în inchirieri_birouri
+--nu merge sa scot check-ul si nu pot introduce tipuri noi de birouri
+--dar am rulat in alt mediu fara checkuri si functioneaza
+INSERT INTO Tip_Birouri (Tip, Pret_Loc)
+VALUES ('Open Desk_1', 200000);
+COMMIT;
+
+SELECT *
+FROM Tip_Birouri tb
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM Inchirieri_birouri ib
+  JOIN Birouri b
+    ON ib.Birou_ID = b.Birou_ID
+  WHERE b.Tip_Birouri_ID = tb.Tip_Birouri_ID
+)
+ORDER BY tb.Tip_Birouri_ID
+;
+
+
+-- ============================================================
+-- 3) TOP-N (primele 4 cele mai mari sume de plată)
+-- Scop: afișează top 4 plăți ordonate descrescător după sumă
+SELECT
+  p.plati_id,                             
+  c.nume           AS companie,         
+  NVL(p.suma_de_plata, 0) AS suma,        
+  DECODE(
+    mp.metoda_plata,
+    'cash',            'Plata numerar',
+    'card',            'Plata cu card',
+    'transfer bancar', 'Plata prin transfer',
+    'Altă metodă'
+  )                AS metoda_prietenoasa, 
+  p.data_plata                           
+FROM plati p
+JOIN companii c
+  ON p.companie_id = c.companie_id
+JOIN metoda_de_plata mp
+  ON p.metoda_plata_id = mp.metoda_plata_id
+ORDER BY 3 DESC                           
+FETCH FIRST 4 ROWS ONLY                  
+;
+
